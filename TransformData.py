@@ -6,7 +6,6 @@
 
 import numpy as np
 import polars as pl
-import polars.selectors as cs
 import matplotlib.pyplot as plt
 import seaborn
 import warnings
@@ -22,6 +21,7 @@ class TransformData():
         self.files_to_load = ['RegularSeasonDetailedResults', 'NCAATourneyDetailedResults', 'NCAATourneySeeds']
         self.df_list = []
         self.fl_data = []
+        self.tourney_data = []
         self.cols_to_stdize = ["LScore", "WScore","LFGM", "LFGA", "LFGM3", "LFGA3", "LFTM", "LFTA", "LOR", "LDR",
                                "LAst", "LTO", "LStl", "LBlk", "LPF","WFGM", "WFGA", "WFGM3", "WFGA3", "WFTM", "WFTA",
                                "WOR", "WDR", "WAst", "WTO", "WStl", "WBlk", "WPF"]
@@ -54,8 +54,8 @@ class TransformData():
             temp_df_list.append(temp)
         self.fl_data = pl.concat([temp_df_list[0], temp_df_list[1]])
 
-    def prepare(self, df):
-        df_prepped = df.select(
+    def _prepare(self, flag=1):
+        df_prepped = self.df_list[flag].select(
             ["Season", "DayNum", "LTeamID", "LScore", "WTeamID", "WScore", "NumOT", "LFGM",
              "LFGA", "LFGM3", "LFGA3", "LFTM", "LFTA", "LOR", "LDR", "LAst", "LTO", "LStl",
              "LBlk", "LPF", "WFGM", "WFGA", "WFGM3", "WFGA3", "WFTM", "WFTA", "WOR", "WDR",
@@ -78,6 +78,25 @@ class TransformData():
             pl.when(pl.col("PointDiff") > 0).then(pl.col("PointDiff")).otherwise(0).alias("win")
         )
         return df_prepped
+
+    def _prepare_seeds(self):
+        dfSeeds = self.df_list[2].with_columns(
+            pl.col("Seed").str.slice(1).cast(pl.Int32).alias("seed")
+        )
+        return dfSeeds
+
+    def transform_tourney(self):
+        # seed data
+        seeds_T1 = self._prepare_seeds().select(["Season", "TeamID", "seed"]).rename(["Season", "T1_TeamID", "T1_seed"])
+        seeds_T2 = self._prepare_seeds().select(["Season", "TeamID", "seed"]).rename(["Season", "T2_TeamID", "T2_seed"])
+        # tourney data - why doesn't the flag argument work?
+        tourney_data = self._prepare(self, flag=1).select(["Season", "T1_TeamID", "T2_TeamID", "PointDiff", "win", "men_women"])
+        tourney_data = tourney_data.join(seeds_T1, on=["Season", "T1_TeamID"], how="left")
+        tourney_data = tourney_data.join(seeds_T2, on=["Season", "T2_TeamID"], how="left")
+        self.tourney_data = tourney_data.with_columns(
+            (pl.col("T2_seed") - pl.col("T1_seed")).alias("Seed_Diff")
+        )
+        return self
 
 if __name__ == '__main__':
     td = TransformData()
