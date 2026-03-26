@@ -6,8 +6,9 @@
 
 import numpy as np
 import polars as pl
+import statsmodels.api as sm
 import matplotlib.pyplot as plt
-import seaborn
+import tqdm
 import warnings
 warnings.filterwarnings('ignore')
 data_dir = "./march-machine-learning-mania-2025/"
@@ -235,8 +236,7 @@ class TransformData():
         Fit a Gaussian GLM per season/gender to derive a team quality rating
         from regular season PointDiff. Merges T1_quality and T2_quality onto tourney_data.
         """
-        import statsmodels.api as sm
-        from tqdm import tqdm
+
 
         regular_data = self._prepare(flag=0)
 
