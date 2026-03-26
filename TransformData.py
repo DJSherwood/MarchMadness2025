@@ -8,33 +8,87 @@ import numpy as np
 import polars as pl
 import matplotlib.pyplot as plt
 import seaborn
+import statsmodels.api as sm
+from tqdm import tqdm
 import warnings
 warnings.filterwarnings('ignore')
-data_dir = "./march-machine-learning-mania-2025/"
+data_dir = "./march-machine-learning-mania-2026/"
 
 
+def _prepare(df):
+    cols_to_stdize = ["LScore", "WScore", "LFGM", "LFGA", "LFGM3", "LFGA3", "LFTM", "LFTA", "LOR", "LDR",
+                      "LAst", "LTO", "LStl", "LBlk", "LPF", "WFGM", "WFGA", "WFGM3", "WFGA3", "WFTM", "WFTA",
+                      "WOR", "WDR", "WAst", "WTO", "WStl", "WBlk", "WPF"]
+
+    df_prepped = df.select(
+        ["Season", "DayNum", "LTeamID", "LScore", "WTeamID", "WScore", "NumOT", "LFGM",
+         "LFGA", "LFGM3", "LFGA3", "LFTM", "LFTA", "LOR", "LDR", "LAst", "LTO", "LStl",
+         "LBlk", "LPF", "WFGM", "WFGA", "WFGM3", "WFGA3", "WFTM", "WFTA", "WOR", "WDR",
+         "WAst", "WTO", "WStl", "WBlk", "WPF", "men_women"]
+    ).with_columns(
+        (
+                (pl.col(cols_to_stdize) * 40) / (40 + 5 * pl.col("NumOT"))
+        ).name.keep()
+    )
+    # rename columns and stack
+    dfA = df_prepped.rename(lambda col_name: col_name.replace("W", "T1_").replace("L", "T2_"))
+    dfB = df_prepped.rename(lambda col_name: col_name.replace("L", "T1_").replace("W", "T2_"))
+    A_cols = dfA.columns
+    dfB = dfB.select(A_cols)
+    df_prepped = pl.concat([dfA, dfB])
+    # create_features
+    df_prepped = df_prepped.with_columns(
+        (pl.col("T1_Score") - pl.col("T2_Score")).alias("PointDiff")
+    ).with_columns(
+        pl.when(pl.col("PointDiff") > 0).then(pl.col("PointDiff")).otherwise(0).alias("win")
+    )
+    return df_prepped
+
+
+def _prepare_seeds(df):
+    dfSeeds = df.with_columns(
+        pl.col("Seed").str.slice(offset=1, length=2).cast(pl.Int32).alias("seed")
+    )
+    return dfSeeds
 def _standardize(col, numOT):
     return (40 + 5 * numOT) / 40
 
 class TransformData():
     def __init__(self):
         self.files_to_load = ['RegularSeasonDetailedResults', 'NCAATourneyDetailedResults', 'NCAATourneySeeds']
-        self.df_list = []
+        self.seeds_data = []
+        self.tourney_data = []
+        self.season_data = []
         self.fl_data = []
         self.tourney_data = []
-        self.cols_to_stdize = ["LScore", "WScore","LFGM", "LFGA", "LFGM3", "LFGA3", "LFTM", "LFTA", "LOR", "LDR",
-                               "LAst", "LTO", "LStl", "LBlk", "LPF","WFGM", "WFGA", "WFGM3", "WFGA3", "WFTM", "WFTA",
-                               "WOR", "WDR", "WAst", "WTO", "WStl", "WBlk", "WPF"]
 
     def load_data(self):
         for f in self.files_to_load:
-            male_temp = pl.read_csv(data_dir + 'M' + f + '.csv').with_columns(
-                pl.lit(1).alias("men_women")
-            )
-            female_temp = pl.read_csv(data_dir + 'W' + f + '.csv').with_columns(
-                pl.lit(0).alias("men_women")
-            )
-            self.df_list.append(pl.concat([male_temp, female_temp]))
+            if f == 'RegularSeasonDetailedResults':
+                male_temp = pl.read_csv(data_dir + 'M' + f + '.csv').with_columns(
+                    pl.lit(1).alias("men_women")
+                )
+                female_temp = pl.read_csv(data_dir + 'W' + f + '.csv').with_columns(
+                    pl.lit(0).alias("men_women")
+                )
+                self.season_data = pl.concat([male_temp, female_temp])
+            elif f == 'NCAATourneyDetailedResults':
+                male_temp = pl.read_csv(data_dir + 'M' + f + '.csv').with_columns(
+                    pl.lit(1).alias("men_women")
+                )
+                female_temp = pl.read_csv(data_dir + 'W' + f + '.csv').with_columns(
+                    pl.lit(0).alias("men_women")
+                )
+                self.tourney_data = pl.concat([male_temp, female_temp])
+            elif f == 'NCAATourneySeeds':
+                male_temp = pl.read_csv(data_dir + 'M' + f + '.csv').with_columns(
+                    pl.lit(1).alias("men_women")
+                )
+                female_temp = pl.read_csv(data_dir + 'W' + f + '.csv').with_columns(
+                    pl.lit(0).alias("men_women")
+                )
+                self.seeds_data = pl.concat([male_temp, female_temp])
+        return self
 
     def filter_data(self, season=2024, teamid=1443):
         # filter regular results for exploration
@@ -54,43 +108,14 @@ class TransformData():
             temp_df_list.append(temp)
         self.fl_data = pl.concat([temp_df_list[0], temp_df_list[1]])
 
-    def _prepare(self, flag=1):
-        df_prepped = self.df_list[flag].select(
-            ["Season", "DayNum", "LTeamID", "LScore", "WTeamID", "WScore", "NumOT", "LFGM",
-             "LFGA", "LFGM3", "LFGA3", "LFTM", "LFTA", "LOR", "LDR", "LAst", "LTO", "LStl",
-             "LBlk", "LPF", "WFGM", "WFGA", "WFGM3", "WFGA3", "WFTM", "WFTA", "WOR", "WDR",
-             "WAst","WTO", "WStl", "WBlk", "WPF", "men_women"]
-        ).with_columns(
-            (
-                    ( pl.col(self.cols_to_stdize) * 40 ) / ( 40 + 5 * pl.col("NumOT") )
-            ).name.keep()
-        )
-        # rename columns and stack
-        dfA = df_prepped.rename(lambda col_name: col_name.replace("W", "T1_").replace("L", "T2_"))
-        dfB = df_prepped.rename(lambda col_name: col_name.replace("L", "T1_").replace("W", "T2_"))
-        A_cols = dfA.columns
-        dfB = dfB.select(A_cols)
-        df_prepped = pl.concat([dfA, dfB])
-        # create_features
-        df_prepped = df_prepped.with_columns(
-            (pl.col("T1_Score") - pl.col("T2_Score")).alias("PointDiff")
-        ).with_columns(
-            pl.when(pl.col("PointDiff") > 0).then(pl.col("PointDiff")).otherwise(0).alias("win")
-        )
-        return df_prepped
-
-    def _prepare_seeds(self):
-        dfSeeds = self.df_list[2].with_columns(
-            pl.col("Seed").str.slice(1).cast(pl.Int32).alias("seed")
-        )
-        return dfSeeds
 
     def transform_tourney(self):
         # seed data
-        seeds_T1 = self._prepare_seeds().select(["Season", "TeamID", "seed"]).rename(["Season", "T1_TeamID", "T1_seed"])
-        seeds_T2 = self._prepare_seeds().select(["Season", "TeamID", "seed"]).rename(["Season", "T2_TeamID", "T2_seed"])
+        seeds_T1 = _prepare_seeds(self.seeds_data).select(["Season", "TeamID", "seed"]).rename({"TeamID": "T1_TeamID", "seed": "T1_seed"})
+
+        seeds_T2 = _prepare_seeds(self.seeds_data).select(["Season", "TeamID", "seed"]).rename({"TeamID": "T2_TeamID", "seed": "T2_seed"})
         # tourney data - why doesn't the flag argument work?
-        tourney_data = self._prepare(self, flag=1).select(["Season", "T1_TeamID", "T2_TeamID", "PointDiff", "win", "men_women"])
+        tourney_data = _prepare(self.tourney_data).select(["Season", "T1_TeamID", "T2_TeamID", "PointDiff", "win", "men_women"])
         tourney_data = tourney_data.join(seeds_T1, on=["Season", "T1_TeamID"], how="left")
         tourney_data = tourney_data.join(seeds_T2, on=["Season", "T2_TeamID"], how="left")
         self.tourney_data = tourney_data.with_columns(
@@ -111,7 +136,7 @@ class TransformData():
             "PointDiff",
         ]
 
-        regular_data = self._prepare(flag=0)
+        regular_data = _prepare(self.season_data)
 
         # Season averages grouped by Season + T1_TeamID
         ss = (
@@ -165,13 +190,13 @@ class TransformData():
         Compute end-of-season Elo ratings from regular season results,
         then merge T1 and T2 Elos onto tourney_data.
         """
-        regular_data = self._prepare(flag=0)
+        regular_data = _prepare(self.season_data)
 
         # Only keep wins (avoids double-counting — each game appears twice in _prepare output)
         wins_only = regular_data.filter(pl.col("win") > 0)
 
         seasons = (
-            self._prepare_seeds()
+            _prepare_seeds(self.seeds_data)
             .select("Season")
             .unique()
             .sort("Season")
@@ -188,6 +213,9 @@ class TransformData():
                 .select(["T1_TeamID", "T2_TeamID"])
                 .to_numpy()  # convert once for fast row iteration
             )
+            # Guard: skip seasons with no regular season data
+            if ss.shape[0] == 0:
+                continue
 
             # Initialise every team in this season to base_elo
             teams = set(ss[:, 0]) | set(ss[:, 1])
@@ -200,12 +228,16 @@ class TransformData():
                 elo[w_team] = w_elo_new
                 elo[l_team] = l_elo_new
 
+            # Explicit schema prevents Null-type inference on empty or ambiguous frames
             elos_list.append(
-                pl.DataFrame({
-                    "TeamID": list(elo.keys()),
-                    "elo": list(elo.values()),
-                    "Season": season,
-                })
+                pl.DataFrame(
+                    {
+                        "TeamID": list(elo.keys()),
+                        "elo": list(elo.values()),
+                        "Season": season,
+                    },
+                    schema={"TeamID": pl.Int64, "elo": pl.Float64, "Season": pl.Int64}
+                )
             )
 
         elos = pl.concat(elos_list)
@@ -235,10 +267,9 @@ class TransformData():
         Fit a Gaussian GLM per season/gender to derive a team quality rating
         from regular season PointDiff. Merges T1_quality and T2_quality onto tourney_data.
         """
-        import statsmodels.api as sm
-        from tqdm import tqdm
 
-        regular_data = self._prepare(flag=0)
+
+        regular_data = _prepare(self.season_data)
 
         # --- Build Season/TeamID composite keys ---
         regular_data = regular_data.with_columns([
@@ -246,7 +277,7 @@ class TransformData():
             (pl.col("Season").cast(pl.Utf8) + "/" + pl.col("T2_TeamID").cast(pl.Utf8)).alias("ST2"),
         ])
 
-        seeds = self._prepare_seeds()
+        seeds = _prepare_seeds(self.seeds_data)
         seeds_T1 = seeds.rename({"TeamID": "T1_TeamID", "seed": "T1_seed"}).with_columns(
             (pl.col("Season").cast(pl.Utf8) + "/" + pl.col("T1_TeamID").cast(pl.Utf8)).alias("ST1")
         )
@@ -339,6 +370,14 @@ class TransformData():
 if __name__ == '__main__':
     td = TransformData()
     td.load_data()
-    print(td.prepare(td.df_list[0]))
-    # td.expl_data.glimpse()
+    # td.tourney_data.glimpse()
+    # td.season_data.glimpse()
+    # td.seeds_data.glimpse()
+
+    # so what is the sequence of steps to effect these transformations
+    td.transform_tourney()
+    td.merge_season_averages()
+    td.compute_elo()
+    td.compute_glm_quality()
+    # td.team_quality()
 
